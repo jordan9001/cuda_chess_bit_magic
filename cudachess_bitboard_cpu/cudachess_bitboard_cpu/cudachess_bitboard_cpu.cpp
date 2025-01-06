@@ -14,7 +14,7 @@
 #define TBL_BIT_PAD     0
 #define MAX_MASK_BITS   (12 + TBL_BIT_PAD)
 
-#define MAX_TRIES       300000
+#define MAX_TRIES       3000000
 //#define MAX_TRIES       3000
 
 #define NUM_SQ          64

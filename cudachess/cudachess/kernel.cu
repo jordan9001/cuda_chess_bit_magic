@@ -13,7 +13,7 @@
 #define MAX_MASK_BITS_NPAD  12
 #define MAX_MASK_BITS       (MAX_MASK_BITS_NPAD + TBL_BIT_PAD)
 
-#define MAX_TRIES           200
+#define MAX_TRIES           2000
 
 //#define MAX_TRIES       2000 // similar number of cases to the 24 cpu cores doing 3000000 tries
 
@@ -325,7 +325,7 @@ int loopAllBoards() {
     }
 
     // get the ideal BPG / TPB
-    threadsPerBlock = 64;
+    threadsPerBlock = 128;
 
     cudaStatus = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerGrid, findMagicOne, threadsPerBlock, sizeof(uint64_t));
     if (cudaStatus != cudaSuccess) {
