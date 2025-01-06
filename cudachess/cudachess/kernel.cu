@@ -1,27 +1,31 @@
 ﻿
 #include <stdio.h>
 #include <time.h>
+#include <intrin.h>
+#include <limits>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "curand_kernel.h"
 
 // rook is 12, bishop is 9: keep in mind we only care about blocker locations in our mask, not possible move locations
 
-#define TBL_BIT_PAD     1
-#define MAX_MASK_BITS   (12 + TBL_BIT_PAD)
+#define TBL_BIT_PAD         0
+#define MAX_MASK_BITS_NPAD  12
+#define MAX_MASK_BITS       (MAX_MASK_BITS_NPAD + TBL_BIT_PAD)
 
-#define MAX_TRIES       100000
-//#define MAX_TRIES       3000
+#define MAX_TRIES           200
 
-#define NUM_SQ          64
+//#define MAX_TRIES       2000 // similar number of cases to the 24 cpu cores doing 3000000 tries
 
-#define SEED            9396939
+#define NUM_SQ              64
 
-#define DEVNUM          0
+#define SEED                9396939
 
-#define LOOPS_PER_CHECK 0x100
+#define DEVNUM              0
 
-__device__ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases)
+#define LOOPS_PER_CHECK     0x100
+
+__host__ __device__ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases)
 {
     uint8_t shifts[MAX_MASK_BITS];
     uint64_t i, j, s;
@@ -32,17 +36,17 @@ __device__ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases
         s = (1ll << i);
 
         if (s & mask) {
-            shifts[j] = i;
+            shifts[j] = (uint8_t)(i - j);
             j += 1;
         }
     }
     // j should always be numbits
 
     // fill out the cases
-    for (i = 0; i < (1ll << numbits); i++) {
+    for (i = 0; i < (1ull << numbits); i++) {
         s = 0;
         for (j = 0; j < numbits; j++) {
-            s |= ((i & (1ll << j)) << shifts[j]);
+            s |= ((i & (1ull << j)) << shifts[j]);
         }
 
         // s is our case to check
@@ -52,110 +56,70 @@ __device__ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases
     // count should always be 1<<numbits
 }
 
-// should be able to run all the masks at the same time
-__global__ void findMagic(uint64_t* masks, uint64_t* out_magic)
-{
-    curandStateXORWOW_t state;
-    uint64_t cases[1 << MAX_MASK_BITS];
-    uint32_t used[1 << MAX_MASK_BITS];
-    uint32_t numbits;
-    uint32_t i, j;
-    uint64_t magic, val;
-    uint64_t mask;
-
-    mask = masks[threadIdx.x];
-
-    // seed the prng
-    // fine if all threads have a identical state
-    curand_init(SEED, 0, 0, &state);
-
-    // get numbits from the mask
-    numbits = (uint32_t)__popcll(mask);
-    genMaskedBoards(mask, numbits, cases);
-
-    memset(used, -1, sizeof(used));
-
-    // now with our cases to check, start pulling random numbers and checking them against all cases
-    for (i = 0; i < MAX_TRIES; i++) {
-        magic = curand(&state);
-        magic |= ((uint64_t)curand(&state)) << 32;
-
-        //memset(used, 0, sizeof(used));
-
-#pragma unroll 8
-        for (j = 0; j < (1 << numbits); j++) {
-            val = (magic * cases[j]) >> (64 - (numbits + TBL_BIT_PAD));
-
-            // do we need to allow a bigger table? Or can we get it? Just try I guess
-
-            // do we let all tables be the (1 << MAX_MASK_BITS) size with the same shift?
-            // doing a tab = rook_moves[sq]; tab[((board_occ & rook_masks[sq]) * rook_magic[sq]) >> rook_shift[sq]]
-            // shift from popcount of the mask? Or from a table, whatever
-
-
-            // if we fail due to a collision, exit early
-            if (used[val] == i) {
-                magic = 0;
-                break;
-            }
-            used[val] = i;
-        }
-
-        // if it worked exit early
-        if (magic != 0) {
-            out_magic[threadIdx.x] = magic;
-            return; // could have waaaaay better usage if we queued tries all over instead of just quick exiting threads
-        }
-    }
-
-    // sad, we didn't find one
-}
-
 // use all just to search for one
-__global__ void findMagicOne(uint64_t mask, uint64_t* out_magic)
+extern __shared__ uint64_t s_cases[];
+__global__ void findMagicOne(uint64_t mask, const uint64_t* cases, uint32_t numbits, uint64_t* out_magic)
 {
     curandStateXORWOW_t state;
-    uint64_t cases[1 << MAX_MASK_BITS];
-    uint32_t used[1 << MAX_MASK_BITS] = { 0 };
-    uint32_t numbits;
-    uint32_t i, j;
+    uint32_t bitnpad, shft;
+    uint32_t i, j, jend;
     uint64_t magic, val;
     int idx = (blockDim.x * blockIdx.x) + threadIdx.x;
+    uint8_t used[1ull << (MAX_MASK_BITS - 3)];
+
+    jend = 1ull << numbits;
+
+    for (i = threadIdx.x; i < (1ull << numbits); i += blockDim.x) {
+        s_cases[i] = cases[i];
+    }
 
     // seed the prng unique to the thread
     //curand_init(SEED, idx, 0, &state); // is unique sequence enough? Or do I need to offset by max tries?
     curand_init(SEED, 0, MAX_TRIES * idx, &state);
 
-    // get numbits from the mask
-    numbits = __popcll(mask);
-    genMaskedBoards(mask, numbits, cases);
+    bitnpad = numbits + TBL_BIT_PAD;
+    //memset(used, 0, (1ull << bitnpad) * sizeof(uint8_t));
 
+    shft = (64 - bitnpad);
+
+
+    // synch the threads because our shared memory init
+    __syncthreads();
 
     // now with our cases to check, start pulling random numbers and checking them against all cases
     for (i = 1; i < MAX_TRIES; i++) {
         magic = curand(&state);
         magic |= ((uint64_t)curand(&state)) << 32;
 
-        for (j = 0; j < (1ull << numbits); j++) {
-            val = (magic * cases[j]) >> (64 - (numbits + TBL_BIT_PAD));
+        memset(used, 0, 1ull << (bitnpad - 3));
+
+        for (j = 0; j < jend; j++) {
+            val = s_cases[j];
+            val = magic * val;
+            val = val >> shft;
 
             // if we fail due to a collision, exit early
-            if (used[val] == i) {
+            // this is terrible for trying to keep warps together
+            // also the used index depends on the cases index, so big stalls here
+            if (used[val >> 3] & (1 << (val & 0x7))) {
                 magic = 0;
-                break;
+                break; // removing this break doesn't change perf much
             }
 
-            used[val] = i;
+            //used[val] = i;
+            used[val >> 3] |= (1 << (val & 0x7));
         }
 
         // if it worked exit early
-        if (magic != 0) {
+        if ((magic != 0) && (*out_magic == 0)) {
             // try to atomically set the value
             atomicCAS(out_magic, 0ll, magic);
+
             return;
         } else {
             // check if another thread solved it
-            if (((i & (LOOPS_PER_CHECK - 1)) == 0) && (*out_magic != 0)) {
+            if (((i & (LOOPS_PER_CHECK - 1)) == 0) &&
+                (*out_magic != 0)) {
                 return;
             }
         }
@@ -280,103 +244,32 @@ void genMasksAndAnswers(uint64_t** masks, size_t* masks_len)
     *masks = mptr;
 }
 
-int doAllBoards()
-{
-    size_t i;
-    uint64_t m;
-    int got = 0;
-    int res = -1;
-    cudaError_t cudaStatus;
-    uint64_t* masks;
-    uint64_t* dev_masks;
-    uint64_t* dev_magics;
-    uint64_t* magics;
-    size_t masks_len;
-    clock_t c1, c2;
-    double time_spent;
-
-    // generate the masks (TODO and answers)
-    genMasksAndAnswers(&masks, &masks_len);
-
-    cudaStatus = initCuda();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cuda initializationfailed!");
-        return 1;
-    }
-
-    // alloc memory for mask and out_magic
-    cudaMalloc(&dev_masks, masks_len * sizeof(uint64_t));
-    cudaMalloc(&dev_magics, masks_len * sizeof(uint64_t));
-
-    // copy masks in
-    cudaMemcpy(dev_masks, masks, masks_len * sizeof(uint64_t), cudaMemcpyHostToDevice);
-    cudaMemset(dev_magics, 0, masks_len * sizeof(uint64_t));
-
-    // call the kernel
-    int threadsPerBlock = (int)masks_len;
-    int blocksPerGrid = 1;
-
-    printf("Starting search\n");
-    c1 = clock();
-    findMagic<<<blocksPerGrid, threadsPerBlock>>>(dev_masks, dev_magics);
-    
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
-
-    c2 = clock();
-    time_spent = (double)(c2 - c1) / CLOCKS_PER_SEC;
-    printf("Search took %f sec\n", time_spent);
-
-    // get the results table
-    magics = (uint64_t*)malloc(masks_len * sizeof(uint64_t));
-    cudaMemcpy(magics, dev_magics, masks_len * sizeof(uint64_t), cudaMemcpyDeviceToHost);
-
-    for (i = 0; i < masks_len; i++) {
-        m = magics[i];
-        if (m != 0) {
-            got += 1;
-        }
-
-        printf("%zu %llx\n", i % NUM_SQ, m);
-    }
-
-    printf("Got %d / %zu\n", got, masks_len);
-
-    res = 0;
-
-Error:
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!\n");
-        return 1;
-    }
-
-    return res;
-}
-
-cudaError_t doOneBoard(uint64_t mask, uint64_t* dev_magic, uint64_t* out_magic, int threadsPerBlock, int blocksPerGrid)
+cudaError_t doOneBoard(uint64_t mask, uint64_t* dev_magic, uint64_t* dev_cases, uint64_t* out_magic, int threadsPerBlock, int blocksPerGrid)
 {
     cudaError_t cudaStatus = cudaSuccess;
     uint64_t zero = 0x0;
+    uint32_t numbits;
+    uint64_t cases[(1ull << MAX_MASK_BITS)];
 
-    cudaMemcpy(dev_magic, &zero, sizeof(zero), cudaMemcpyHostToDevice);
+    cudaStatus = cudaMemcpy(dev_magic, &zero, sizeof(zero), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "Failed to copy zero to dev_magic: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
+
+
+    // generate and copy over the cases
+    numbits = (uint32_t)__popcnt64(mask);
+    genMaskedBoards(mask, numbits, cases);
+
+    cudaStatus = cudaMemcpy(dev_cases, cases, (1ull << numbits) * sizeof(uint64_t), cudaMemcpyHostToDevice);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "Failed to copy cases to dev_cases: %s\n", cudaGetErrorString(cudaStatus));
+        goto Error;
+    }
 
     // call the kernel
-    findMagicOne<<<blocksPerGrid, threadsPerBlock>>> (mask, dev_magic);
+    findMagicOne<<< blocksPerGrid, threadsPerBlock, sizeof(uint64_t) * (1ull << numbits) >>> (mask, (const uint64_t*)dev_cases, numbits, dev_magic);
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
@@ -389,7 +282,7 @@ cudaError_t doOneBoard(uint64_t mask, uint64_t* dev_magic, uint64_t* out_magic, 
     // any errors encountered during the launch.
     cudaStatus = cudaDeviceSynchronize();
     if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
+        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
         goto Error;
     }
 
@@ -410,6 +303,7 @@ int loopAllBoards() {
     cudaError_t cudaStatus;
     uint64_t* masks;
     uint64_t* dev_magic;
+    uint64_t* dev_cases;
     uint64_t* magics;
     size_t i, count;
     size_t masks_len;
@@ -431,7 +325,7 @@ int loopAllBoards() {
     }
 
     // get the ideal BPG / TPB
-    threadsPerBlock = 128; // TODO profile this, see if occupancy with this
+    threadsPerBlock = 64;
 
     cudaStatus = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerGrid, findMagicOne, threadsPerBlock, sizeof(uint64_t));
     if (cudaStatus != cudaSuccess) {
@@ -449,21 +343,23 @@ int loopAllBoards() {
 
     blocksPerGrid = prop.multiProcessorCount * blocksPerGrid;
 
-    // alloc memory for out_magic
+
+    // alloc memory for out_magic and cases
     cudaMalloc(&dev_magic, sizeof(uint64_t));
+    cudaMalloc(&dev_cases, sizeof(uint64_t) * (1ull << MAX_MASK_BITS));
 
     printf("Starting loop with %d BPG %d TPB, %d max tries (%d padding bits)\n", blocksPerGrid, threadsPerBlock, MAX_TRIES, TBL_BIT_PAD);
 
     tottries = ((uint64_t)blocksPerGrid) * ((uint64_t)threadsPerBlock) * (MAX_TRIES);
     printf("That's %llx tries\n", tottries);
 
-    for (i = 0; i < masks_len; i++) {
+    //for (i = 0; i < masks_len; i++) {
     //DEBUG
-    //for (i = 9; i <= 9; i++) {
+    for (i = 0; i <= 1; i++) {
         printf("Starting search %zu (%llx)\n", i, masks[i]);
         c1 = clock();
 
-        cudaStatus = doOneBoard(masks[i], dev_magic, &magics[i], threadsPerBlock, blocksPerGrid);
+        cudaStatus = doOneBoard(masks[i], dev_magic, dev_cases, &magics[i], threadsPerBlock, blocksPerGrid);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Error doing board %zu\n", i);
             break;

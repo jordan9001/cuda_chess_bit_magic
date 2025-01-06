@@ -11,10 +11,10 @@
 
 // rook is 12, bishop is 9: keep in mind we only care about blocker locations in our mask, not possible move locations
 
-#define TBL_BIT_PAD     1
+#define TBL_BIT_PAD     0
 #define MAX_MASK_BITS   (12 + TBL_BIT_PAD)
 
-#define MAX_TRIES       10000000
+#define MAX_TRIES       300000
 //#define MAX_TRIES       3000
 
 #define NUM_SQ          64
@@ -36,7 +36,7 @@ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases)
         s = (1ull << i);
 
         if (s & mask) {
-            shifts[j] = (uint8_t)i;
+            shifts[j] = (uint8_t)i - j;
             j += 1ull;
         }
     }
@@ -51,6 +51,8 @@ void genMaskedBoards(uint64_t mask, uint32_t numbits, uint64_t* cases)
 
         // s is our case to check
         cases[i] = s;
+        //printf("................ - %016llx\n", mask);
+        //printf("%016llx = %016llx\n", i, s);
     }
 
     // count should always be 1<<numbits
@@ -73,7 +75,6 @@ void findMagicOne(uint64_t mask, uint64_t* out_magic, int idx)
     // get numbits from the mask
     numbits = (uint32_t)__popcnt64(mask);
     genMaskedBoards(mask, numbits, cases);
-
 
     // now with our cases to check, start pulling random numbers and checking them against all cases
     for (i = 1; i < MAX_TRIES; i++) {
@@ -259,9 +260,9 @@ int loopAllBoards() {
     tottries = ((uint64_t)threadsPerBlock) * (MAX_TRIES);
     printf("That's %llx tries\n", tottries);
 
-    for (i = 0; i < masks_len; i++) {
-        //DEBUG
-        //for (i = 9; i <= 9; i++) {
+    //for (i = 0; i < masks_len; i++) {
+    //DEBUG
+    for (i = 0; i <= 1; i++) {
         printf("Starting search %zu (%llx)\n", i, masks[i]);
         c1 = clock();
 
