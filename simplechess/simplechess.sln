@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.7.34024.191
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "simplechess", "simplechess\simplechess.vcxproj", "{20693D5C-5472-465B-AA10-5EF69281562C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{20693D5C-5472-465B-AA10-5EF69281562C}.Debug|x64.ActiveCfg = Debug|x64
+		{20693D5C-5472-465B-AA10-5EF69281562C}.Debug|x64.Build.0 = Debug|x64
+		{20693D5C-5472-465B-AA10-5EF69281562C}.Release|x64.ActiveCfg = Release|x64
+		{20693D5C-5472-465B-AA10-5EF69281562C}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0EDCCB16-BE22-48A7-80C1-70DCFECBCBED}
+	EndGlobalSection
+EndGlobal

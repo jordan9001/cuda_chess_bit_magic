@@ -9,18 +9,18 @@
 
 // rook is 12, bishop is 9: keep in mind we only care about blocker locations in our mask, not possible move locations
 
-#define TBL_BIT_PAD         1
+#define TBL_BIT_PAD         0
 #define MAX_MASK_BITS_NPAD  12
 #define MAX_MASK_BITS       (MAX_MASK_BITS_NPAD + TBL_BIT_PAD)
 #define MAX_SMEM_PERBLOCK   0xc000
 
-#define MAX_TRIES           30000
+#define MAX_TRIES           9000000
 
 //#define MAX_TRIES       2000 // similar number of cases to the 24 cpu cores doing 3000000 tries
 
 #define NUM_SQ              64
 
-#define SEED                9396939
+#define SEED                0x03939693930
 
 #define DEVNUM              0
 
@@ -361,9 +361,9 @@ int loopAllBoards() {
     tottries = ((uint64_t)blocksPerGrid) * ((uint64_t)threadsPerBlock) * (MAX_TRIES);
     printf("That's %llx tries\n", tottries);
 
-    for (i = 0; i < masks_len; i++) {
+    //for (i = 0; i < masks_len; i++) {
     //DEBUG
-    //for (i = 0; i <= 1; i++) {
+    for (size_t i : { 21, 5, 2, 3, 1}) {
         printf("Starting search %zu (%llx)\n", i, masks[i]);
         c1 = clock();
 

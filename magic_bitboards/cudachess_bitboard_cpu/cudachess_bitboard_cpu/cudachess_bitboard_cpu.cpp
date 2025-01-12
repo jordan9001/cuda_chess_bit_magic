@@ -14,7 +14,7 @@
 #define TBL_BIT_PAD     0
 #define MAX_MASK_BITS   (12 + TBL_BIT_PAD)
 
-#define MAX_TRIES       3000000
+#define MAX_TRIES       600000000
 //#define MAX_TRIES       3000
 
 #define NUM_SQ          64
@@ -260,9 +260,9 @@ int loopAllBoards() {
     tottries = ((uint64_t)threadsPerBlock) * (MAX_TRIES);
     printf("That's %llx tries\n", tottries);
 
-    //for (i = 0; i < masks_len; i++) {
+    for (i = 1; i < masks_len; i++) {
     //DEBUG
-    for (i = 0; i <= 1; i++) {
+    //for (i = 0; i <= 1; i++) {
         printf("Starting search %zu (%llx)\n", i, masks[i]);
         c1 = clock();
 
