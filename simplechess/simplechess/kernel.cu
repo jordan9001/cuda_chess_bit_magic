@@ -5,10 +5,13 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#include <array>
+#include <stdexcept>
 
-constexpr int32_t NUMSQ = 64;
-constexpr int32_t WIDTH = 8;
+constexpr int32_t WIDTH_SHIFT = 3;
+constexpr int32_t WIDTH = (1 << WIDTH_SHIFT);
+constexpr int32_t HEIGHT = WIDTH;
+constexpr int32_t NUMSQ = (WIDTH * HEIGHT);
+
 
 
 enum Piece {
@@ -74,10 +77,79 @@ struct MagicInfo {
         : mask(m), num(n), shift(s), table(t) {};
 };
 
+template<size_t N>
 struct MagicInfoArray {
+    uint64_t lut_mem[N];
     MagicInfo arr[NUMSQ];
 
-    constexpr MagicInfoArray() : arr{} {};
+    constexpr MagicInfoArray() : arr{}, lut_mem{} {};
+
+    constexpr static MagicInfoArray make_magic_gen(const MagicInfoStarter* starter, uint64_t(*get_ans)(int32_t, uint64_t))
+    {
+        MagicInfoArray mi_arr{};
+        int32_t memidx = 0;
+        int32_t sq = 0;
+
+        int8_t shifts[64] = { -1 };
+
+        for (int32_t f = 0; f < HEIGHT; f++) {
+            for (int32_t r = 0; r < WIDTH; r++) {
+                sq = r + (f * WIDTH);
+
+                uint64_t mask = starter[sq].mask;
+                uint64_t magic = starter[sq].num;
+                int32_t shiftamt = starter[sq].shift;
+
+                mi_arr.arr[sq] = MagicInfo{ mask, magic, shiftamt, &mi_arr.lut_mem[memidx] };
+
+                size_t mem_sz = (1ull << (64 - shiftamt));
+
+                // For each possible permutation of the masked bits, generate the reachable moves (including captures)
+                // first build our shift table for the mask
+                uint64_t popcount = 0;
+                for (uint64_t bit_i = 0; bit_i < 64; bit_i++) {
+                    uint64_t s = (1ull << bit_i);
+
+                    if (s & mask) {
+                        shifts[popcount] = (int8_t)(bit_i - popcount);
+                        popcount++;
+                    }
+                }
+
+                // now for each case from 0 to (1 << popcount) we can generate an answer
+
+                for (uint64_t poscase = 0; poscase < (1ull << popcount); poscase++) {
+                    uint64_t maskcase = 0;
+                    for (uint64_t bit_i = 0; bit_i < popcount; bit_i++) {
+                        maskcase |= ((poscase & (1ull << bit_i)) << shifts[bit_i]);
+                    }
+
+                    // take our case and make an index from it
+                    uint64_t mem_idx = (magic * maskcase) >> shiftamt;
+
+                    if (mem_idx >= mem_sz) {
+                        throw std::logic_error("Magic Index too big!");
+                    }
+
+                    // fill out the allowed moves with this mask
+                    mi_arr.lut_mem[memidx + mem_idx] = get_ans(sq, maskcase);
+                }
+
+                memidx += (int32_t)mem_sz;
+            }
+        }
+        return mi_arr;
+    }
+
+    constexpr static MagicInfoArray make_magic_bishop(const MagicInfoStarter* starter)
+    {
+        return make_magic_gen(starter, get_bishop_moves);
+    }
+
+    constexpr static MagicInfoArray make_magic_rook(const MagicInfoStarter* starter)
+    {
+        return make_magic_gen(starter, get_rook_moves);
+    }
 };
 
 constexpr MagicInfoStarter starter(uint64_t mask, int32_t padding, uint64_t magic) {
@@ -95,6 +167,8 @@ constexpr MagicInfoStarter starter(uint64_t mask, int32_t padding, uint64_t magi
     return MagicInfoStarter{ mask, magic, 64 - bits };
 }
 
+//TODO I forgot about indexes that map to the same moveset because of shadowed pieces
+// so these could all be smaller
 constexpr MagicInfoStarter bishop_starter[NUMSQ] = {
     starter(0x40201008040200, 0, 0x9fe0a01d1d0700b2),
     starter(0x402010080400, 0, 0x8c08b87803a2d30f),
@@ -241,43 +315,84 @@ constexpr size_t max_magic_lut_mem(const MagicInfoStarter* starter)
     return amt;
 }
 
-
-constexpr MagicInfoArray make_magic_bishop(const MagicInfoStarter* starter, const uint64_t* lut_mem_buf)
+constexpr uint64_t get_rook_moves(int32_t sq, uint64_t occupied)
 {
-    MagicInfoArray mi_arr{};;
-    int32_t i = 0;
-    for (i = 0; i < NUMSQ; i++) {
-        mi_arr.arr[i] = MagicInfo{ starter[i].mask, starter[i].num, starter[i].shift, lut_mem_buf};
+    int32_t file = sq >> WIDTH_SHIFT;
+    int32_t rank = sq & (WIDTH - 1);
+    int32_t nsq = 0;
+    uint64_t moves = 0;
 
-        // go and fill out the answers
-        //TODO
+    for (int32_t f = file + 1; f < HEIGHT; f++) {
+        nsq = (f << WIDTH_SHIFT) + rank;
+        moves |= (1ull << nsq);
 
-
-        size_t bits = 64 - starter[i].shift;
-        lut_mem_buf += (1ull << bits);
+        if ((1ull << nsq) & occupied) {
+            break;
+        }
     }
-    return mi_arr;
+
+    for (int32_t f = file - 1; f >= 0; f--) {
+        nsq = (f << WIDTH_SHIFT) + rank;
+        moves |= (1ull << nsq);
+
+        if ((1ull << nsq) & occupied) {
+            break;
+        }
+    }
+
+    for (int32_t r = rank + 1; r < WIDTH; r++) {
+        nsq = (file << WIDTH_SHIFT) + r;
+        moves |= (1ull << nsq);
+
+        if ((1ull << nsq) & occupied) {
+            break;
+        }
+    }
+
+    for (int32_t r = rank - 1; r >= 0; r--) {
+        nsq = (file << WIDTH_SHIFT) + r;
+        moves |= (1ull << nsq);
+
+        if ((1ull << nsq) & occupied) {
+            break;
+        }
+    }
+
+    return moves;
 }
 
-constexpr MagicInfoArray make_magic_rook(const MagicInfoStarter* starter, const uint64_t* lut_mem_buf)
+constexpr uint64_t get_bishop_moves(int32_t sq, uint64_t occupied)
 {
-    MagicInfoArray mi_arr{};
-    int32_t i = 0;
-    for (i = 0; i < NUMSQ; i++) {
-        mi_arr.arr[i] = MagicInfo{ starter[i].mask, starter[i].num, starter[i].shift, lut_mem_buf };
+    int32_t file = sq >> WIDTH_SHIFT;
+    int32_t rank = sq & (WIDTH - 1);
+    int32_t nsq = 0;
+    uint64_t moves = 0;
 
-        // go and fill out the answers
-        //TODO
+    for (int32_t dir = 0; dir < 4; dir++) {
+        for (int32_t off = 1; ; off++) {
+            int32_t r = (dir & 1) ? rank + off : rank - off;
+            if (r < 0 || r >= WIDTH) {
+                break;
+            }
 
+            int32_t f = (dir & 2) ? file + off : file - off;
+            if (f < 0 || f >= HEIGHT) {
+                break;
+            }
 
-        size_t bits = 64 - starter[i].shift;
-        lut_mem_buf += (1ull << bits);
+            nsq = r + (f << WIDTH_SHIFT);
+
+            moves |= (1ull << nsq);
+
+            if ((1ull << nsq) * occupied) {
+                break;
+            }
+        }
     }
-    return mi_arr;
+
+
+    return moves;
 }
-
-
-
 
 struct MoveArray {
     uint64_t arr[NUMSQ];
@@ -287,8 +402,48 @@ struct MoveArray {
 
 constexpr auto make_knight_moves() {
     MoveArray moves = {};
+    uint64_t sq_moves = 0;
 
-    //TODO
+    for (int32_t f = 0; f < HEIGHT; f++) {
+        for (int32_t r = 0; r < WIDTH; r++) {
+            sq_moves = 0;
+
+            if ((r - 2) >= 0) {
+                if ((f - 1) >= 0) {
+                    sq_moves |= (1ull << ((r - 2) + ((f - 1) * WIDTH)));
+                }
+                if ((f + 1) < HEIGHT) {
+                    sq_moves |= (1ull << ((r - 2) + ((f + 1) * WIDTH)));
+                }
+            }
+            if ((r - 1) >= 0) {
+                if ((f - 2) >= 0) {
+                    sq_moves |= (1ull << ((r - 1) + ((f - 2) * WIDTH)));
+                }
+                if ((f + 2) < HEIGHT) {
+                    sq_moves |= (1ull << ((r - 1) + ((f + 2) * WIDTH)));
+                }
+            }
+            if ((r + 2) < WIDTH) {
+                if ((f - 1) >= 0) {
+                    sq_moves |= (1ull << ((r + 2) + ((f - 1) * WIDTH)));
+                }
+                if ((f + 1) < HEIGHT) {
+                    sq_moves |= (1ull << ((r + 2) + ((f + 1) * WIDTH)));
+                }
+            }
+            if ((r + 1) < WIDTH) {
+                if ((f - 2) >= 0) {
+                    sq_moves |= (1ull << ((r + 1) + ((f - 2) * WIDTH)));
+                }
+                if ((f + 2) < HEIGHT) {
+                    sq_moves |= (1ull << ((r + 1) + ((f + 2) * WIDTH)));
+                }
+            }
+
+            moves.arr[r + (f * WIDTH)] = sq_moves;
+        }
+    }
 
     return moves;
 }
@@ -296,31 +451,63 @@ constexpr auto make_knight_moves() {
 constexpr auto make_king_moves() {
     MoveArray moves = {};
 
-    //TODO
+    uint64_t sq_moves = 0;
+
+    for (int32_t f = 0; f < HEIGHT; f++) {
+        for (int32_t r = 0; r < WIDTH; r++) {
+            sq_moves = 0;
+
+            if ((r - 1) >= 0) {
+                sq_moves |= (1ull << ((r - 1) + (f * WIDTH)));
+
+                if ((f - 1) >= 0) {
+                    sq_moves |= (1ull << ((r - 1) + ((f - 1) * WIDTH)));
+                }
+                if ((f + 1) < HEIGHT) {
+                    sq_moves |= (1ull << ((r - 1) + ((f + 1) * WIDTH)));
+                }
+            }
+            if ((f - 1) >= 0) {
+                sq_moves |= (1ull << (r + ((f - 1) * WIDTH)));
+            }
+            if ((f + 1) < HEIGHT) {
+                sq_moves |= (1ull << (r + ((f + 1) * WIDTH)));
+            }
+            if ((r + 1) < WIDTH) {
+                sq_moves |= (1ull << ((r + 1) + (f * WIDTH)));
+
+                if ((f - 1) >= 0) {
+                    sq_moves |= (1ull << ((r + 1) + ((f - 1) * WIDTH)));
+                }
+                if ((f + 1) < HEIGHT) {
+                    sq_moves |= (1ull << ((r + 1) + ((f + 1) * WIDTH)));
+                }
+            }
+
+            moves.arr[r + (f * WIDTH)] = sq_moves;
+        }
+    }
 
     return moves;
 }
 
+constexpr size_t rook_mem_needed = max_magic_lut_mem(rook_starter);
+constexpr size_t bishop_mem_needed = max_magic_lut_mem(bishop_starter);
 
 struct LUTs {
-    uint64_t lut_mem_bishop[max_magic_lut_mem(bishop_starter)];
-    uint64_t lut_mem_rook[max_magic_lut_mem(rook_starter)];
-    MagicInfoArray lut_magic_bishop;
-    MagicInfoArray lut_magic_rook;
+    MagicInfoArray<bishop_mem_needed> lut_magic_bishop;
+    MagicInfoArray<rook_mem_needed> lut_magic_rook;
     MoveArray lut_nk_moves[2];
 
     constexpr LUTs() :
-        lut_mem_bishop{},
-        lut_mem_rook{},
-        lut_magic_bishop(make_magic_bishop(bishop_starter, lut_mem_bishop)),
-        lut_magic_rook(make_magic_rook(rook_starter, lut_mem_rook)),
         lut_nk_moves{ make_knight_moves(), make_king_moves() }
-    {};
+    {
+        lut_magic_bishop = MagicInfoArray<bishop_mem_needed>::make_magic_bishop(bishop_starter);
+        lut_magic_rook = MagicInfoArray<rook_mem_needed>::make_magic_rook(rook_starter);
+    };
 };
 
-// Apperantly just passing this as a parameter to a kernel is fine? The compiler should recognize these are constant and help us out?
-//TODO verify this is true, otherwise we need a __device__ copy of this
-LUTs g_LUTs = {};
+constexpr LUTs g_LUTs = {};
 
 __device__ __host__ void evaluate() {
     // given a position, evaluate it's guessed value

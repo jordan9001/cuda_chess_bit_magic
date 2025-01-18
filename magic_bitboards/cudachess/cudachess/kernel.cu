@@ -14,7 +14,7 @@
 #define MAX_MASK_BITS       (MAX_MASK_BITS_NPAD + TBL_BIT_PAD)
 #define MAX_SMEM_PERBLOCK   0xc000
 
-#define MAX_TRIES           9000000
+#define MAX_TRIES           9000
 
 //#define MAX_TRIES       2000 // similar number of cases to the 24 cpu cores doing 3000000 tries
 
@@ -67,6 +67,8 @@ __global__ void findMagicOne(uint64_t mask, uint64_t* out_magic)
     uint64_t magic, val;
     int idx = (blockDim.x * blockIdx.x) + threadIdx.x;
     //uint8_t used[1ull << (MAX_MASK_BITS - 3)];
+    // OOPS! We didn't account for legal collisions!
+    // To do this right we have to check the actual answer
     uint8_t* used;
 
     numbits = __popcll(mask);
@@ -363,7 +365,8 @@ int loopAllBoards() {
 
     //for (i = 0; i < masks_len; i++) {
     //DEBUG
-    for (size_t i : { 21, 5, 2, 3, 1}) {
+    for (i = 64; i < masks_len; i++) {
+    //for (size_t i : { 21, 5, 2, 3, 1}) {
         printf("Starting search %zu (%llx)\n", i, masks[i]);
         c1 = clock();
 
